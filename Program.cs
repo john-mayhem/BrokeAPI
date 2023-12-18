@@ -39,7 +39,7 @@ namespace BrokeAPI
             ArgumentNullException.ThrowIfNull(args);
 
             LoadConfiguration();
-            Console.WriteLine("Loggin system started.");
+            Console.WriteLine("Logging system started.");
             Log.Logger = new LoggerConfiguration()
                 .WriteTo.File(Path.Combine(Directory.GetCurrentDirectory(), "logs", "log-.txt"), rollingInterval: RollingInterval.Day)
                 .CreateLogger();
@@ -105,6 +105,7 @@ namespace BrokeAPI
                     new XElement("Database",
                         new XElement("DatabaseIP", "127.0.0.1"),
                         new XElement("DatabasePort", "3306"),
+                        new XElement("DatabaseName", "default"),
                         new XElement("DatabaseLogin", "root"),
                         new XElement("DatabasePassword", "password")),
                     new XElement("Backend",
@@ -131,6 +132,7 @@ namespace BrokeAPI
                     var databaseConfig = _config.Element("Database");
                     var databaseIP = databaseConfig?.Element("DatabaseIP")?.Value;
                     var databasePort = databaseConfig?.Element("DatabasePort")?.Value;
+                    var databaseName = databaseConfig?.Element("DatabaseName")?.Value;
                     var databaseLogin = databaseConfig?.Element("DatabaseLogin")?.Value;
                     var databasePassword = databaseConfig?.Element("DatabasePassword")?.Value;
 
@@ -162,11 +164,11 @@ namespace BrokeAPI
         private static async Task StartWebServer()
         {
             // Retrieve IP and Port from the configuration
-            var ip = _config?.Element("IP")?.Value ?? "*";
-            var port = _config?.Element("Port")?.Value ?? "5000";
+            var webServerConfig = _config?.Element("WebServer");
+            var ip = webServerConfig?.Element("IP")?.Value ?? "*";
+            var port = webServerConfig?.Element("Port")?.Value ?? "5000";
             var url = $"http://{ip}:{port}";
-
-            Console.Write("Webserver started at:  " + url);
+            Console.WriteLine("Webserver started at: " + url);
 
             var host = Host.CreateDefaultBuilder()
               .UseSerilog() // Use Serilog for logging
@@ -174,9 +176,6 @@ namespace BrokeAPI
               {
                   webBuilder.Configure(app =>
                   {
-                      // Static file serving setup remains the same
-                      // ...
-
                       app.UseRouting();
 
                       app.UseEndpoints(endpoints =>
@@ -185,12 +184,10 @@ namespace BrokeAPI
                           {
                               await context.Response.WriteAsync("");
                           });
-                          // Additional endpoints for API
                       });
                   })
                     .UseUrls(url);
               }).Build();
-
             await host.RunAsync();
         }
     }
