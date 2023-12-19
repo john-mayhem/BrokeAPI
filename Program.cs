@@ -36,31 +36,34 @@ namespace BrokeAPI
 
         public static async Task Main(string[] args)
         {
+
+            Log.Logger = new LoggerConfiguration().WriteTo.File(Path.Combine(Directory.GetCurrentDirectory(), "logs", "log-.txt"), rollingInterval: RollingInterval.Day).CreateLogger();
             ArgumentNullException.ThrowIfNull(args);
+            Log.Information("Application starting up");
 
             LoadConfiguration();
-            Console.WriteLine("Logging system started.");
-            Log.Logger = new LoggerConfiguration()
-                .WriteTo.File(Path.Combine(Directory.GetCurrentDirectory(), "logs", "log-.txt"), rollingInterval: RollingInterval.Day)
-                .CreateLogger();
 
             if (_config != null)
             {
+                Log.Information("Backend system starting.");
                 Console.WriteLine("Backend system starting.");
                 var updateTimeStr = _config.Element("Backend")?.Element("UpdateTime")?.Value;
                 if (int.TryParse(updateTimeStr, out int updateTime))
                 {
                     var backend = new Backend(_config, updateTime);
                     backend.Start();
+                    Log.Information("Backend started with update time: {UpdateTime}", updateTime);
                 }
                 else
                 {
-                    Console.WriteLine("Invalid UpdateTime in configuration.");
-                    // Handle error
+                    Console.WriteLine("Invalid UpdateTime in configuration. Exiting.");
+                    Log.Fatal("Invalid UpdateTime in configuration. Exiting application.");
+                    return;
                 }
             }
             else
             {
+                Log.Fatal("Configuration not loaded. Exiting application.");
                 Console.WriteLine("Configuration not loaded. Exiting application.");
                 return;
             }
@@ -68,30 +71,33 @@ namespace BrokeAPI
             try
             {
                 Console.WriteLine("Starting Webserver.");
-                Log.Information("Starting web host");
+                Log.Information("Starting Webserver at {Url}", $"http://{_config?.Element("WebServer")?.Element("IP")?.Value ?? "*"}:{_config?.Element("WebServer")?.Element("Port")?.Value ?? "5000"}");
                 await StartWebServer();
+                Log.Information("Webserver started successfully.");
             }
             catch (Exception ex)
             {
                 Log.Fatal(ex, "Host terminated unexpectedly");
+                Console.WriteLine($"Host terminated unexpectedly: {ex.Message}");
             }
             finally
             {
+                Log.Information("Shutting down");
                 Log.CloseAndFlush();
             }
-
-
         }
 
         private static void LoadConfiguration()
         {
             Console.WriteLine("Attempting to read Configuration.");
+            Log.Information("Attempting to read Configuration.");
             var configDirectory = Path.Combine(Directory.GetCurrentDirectory(), "config");
             var configPath = Path.Combine(configDirectory, "config.xml");
 
             if (!File.Exists(configPath))
             {
                 Console.WriteLine("Configuration file not found. Creating with default values.");
+                Log.Warning("Configuration file not found. Creating with default values.");
                 if (!Directory.Exists(configDirectory))
                 {
                     Directory.CreateDirectory(configDirectory);
@@ -103,6 +109,7 @@ namespace BrokeAPI
                         new XElement("IP", "127.0.0.1"),
                         new XElement("Port", "5000")),
                     new XElement("Database",
+                        new XElement("Engine", "MSSQL"),
                         new XElement("DatabaseIP", "127.0.0.1"),
                         new XElement("DatabasePort", "3306"),
                         new XElement("DatabaseName", "default"),
@@ -122,7 +129,7 @@ namespace BrokeAPI
                 try
                 {
                     _config = XElement.Load(configPath);
-
+                    Log.Information("Configuration file loaded successfully.");
                     // Parsing WebServer Configuration
                     var webServerConfig = _config.Element("WebServer");
                     var ip = webServerConfig?.Element("IP")?.Value;
@@ -130,6 +137,7 @@ namespace BrokeAPI
 
                     // Parsing Database Configuration
                     var databaseConfig = _config.Element("Database");
+                    var databaseEngine = databaseConfig?.Element("Engine")?.Value;
                     var databaseIP = databaseConfig?.Element("DatabaseIP")?.Value;
                     var databasePort = databaseConfig?.Element("DatabasePort")?.Value;
                     var databaseName = databaseConfig?.Element("DatabaseName")?.Value;
@@ -154,9 +162,11 @@ namespace BrokeAPI
                 catch (XmlException ex)
                 {
                     Console.WriteLine($"Error reading configuration file: {ex.Message}");
+                    Log.Error(ex, "Error reading configuration file.");
                     Console.WriteLine("System halted.");
-                    Console.ReadKey(); // Wait for the user to press a key
-                    Environment.Exit(1); // Exit code 1 to indicate an error
+                    Log.Information("System halted. Exiting application.");
+                    Console.ReadKey();
+                    Environment.Exit(1);
                 }
             }
         }

@@ -10,6 +10,7 @@ using MySql.Data.MySqlClient;
 using System;
 using System.IO;
 using System.Threading.Tasks;
+using System.Data.SqlClient;
 
 namespace BrokeAPI
 {
@@ -19,6 +20,7 @@ namespace BrokeAPI
         private System.Timers.Timer? _timer; // Make _timer nullable
         private readonly int _updateTime = updateTime;
         private static readonly char[] separator = [';'];
+        private static readonly char[] separatorArray = [';'];
 
         public void Start()
         {
@@ -90,10 +92,13 @@ namespace BrokeAPI
         }
 
 
-        private static void ProcessJsonToSql(string jsonFilePath, string sqlDirectory)
+        private void ProcessJsonToSql(string jsonFilePath, string sqlDirectory)
         {
+            var databaseEngine = _config.Element("Database")?.Element("Engine")?.Value ?? "MySQL";
+
             try
             {
+
                 var jsonData = File.ReadAllText(jsonFilePath);
                 using var jsonDoc = JsonDocument.Parse(jsonData);
 
@@ -102,10 +107,18 @@ namespace BrokeAPI
 
                 void WriteToFileAndReset()
                 {
-                    File.WriteAllText(Path.Combine(sqlDirectory, $"output_{fileCount}.sql"), sqlCommands.ToString());
-                    sqlCommands.Clear();
-                    fileCount++;
-                    lineCount = 0;
+                    if (sqlCommands.Length > 0) // Check if there are any SQL commands to write
+                    {
+                        var filePath = Path.Combine(sqlDirectory, $"output_{fileCount}.sql");
+                        File.WriteAllText(filePath, sqlCommands.ToString());
+                        sqlCommands.Clear();
+                        fileCount++;
+                        lineCount = 0;
+                    }
+                    else
+                    {
+                        Console.WriteLine("No SQL commands to write.");
+                    }
                 }
 
                 // Processing heroes
@@ -121,14 +134,32 @@ namespace BrokeAPI
                     var shardPlays = hero.Value.GetProperty("shard").GetProperty("plays").GetInt32();
                     var shardWins = hero.Value.GetProperty("shard").GetProperty("wins").GetInt32();
 
-                    sqlCommands.AppendLine($"INSERT INTO heroes (hero, mmr, plays, wins, scepter_plays, scepter_wins, shard_plays, shard_wins) " +
-                                           $"VALUES ('{heroName}', {mmr}, {plays}, {wins}, {scepterPlays}, {scepterWins}, {shardPlays}, {shardWins}) " +
-                                           $"ON DUPLICATE KEY UPDATE mmr = VALUES(mmr), plays = VALUES(plays), wins = VALUES(wins), " +
-                                           $"scepter_plays = VALUES(scepter_plays), scepter_wins = VALUES(scepter_wins), " +
-                                           $"shard_plays = VALUES(shard_plays), shard_wins = VALUES(shard_wins);");
+                    if (databaseEngine.Equals("MSSQL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // MSSQL specific SQL syntax - Make sure to add a semi-colon at the end of each MERGE statement
+                        sqlCommands.AppendLine($"MERGE INTO heroes WITH (HOLDLOCK) AS target " +
+                                               $"USING (SELECT '{heroName}' AS hero) AS source " +
+                                               $"ON target.hero = source.hero " +
+                                               $"WHEN MATCHED THEN " +
+                                               $"UPDATE SET mmr = {mmr}, plays = {plays}, wins = {wins}, " +
+                                               $"scepter_plays = {scepterPlays}, scepter_wins = {scepterWins}, " +
+                                               $"shard_plays = {shardPlays}, shard_wins = {shardWins} " +
+                                               $"WHEN NOT MATCHED THEN " +
+                                               $"INSERT (hero, mmr, plays, wins, scepter_plays, scepter_wins, shard_plays, shard_wins) " +
+                                               $"VALUES ('{heroName}', {mmr}, {plays}, {wins}, {scepterPlays}, {scepterWins}, {shardPlays}, {shardWins});");
+                    }
+                    else
+                    {
+                        // MySQL specific SQL syntax
+                        sqlCommands.AppendLine($"INSERT INTO heroes (hero, mmr, plays, wins, scepter_plays, scepter_wins, shard_plays, shard_wins) " +
+                                               $"VALUES ('{heroName}', {mmr}, {plays}, {wins}, {scepterPlays}, {scepterWins}, {shardPlays}, {shardWins}) " +
+                                               $"ON DUPLICATE KEY UPDATE mmr = VALUES(mmr), plays = VALUES(plays), wins = VALUES(wins), " +
+                                               $"scepter_plays = VALUES(scepter_plays), scepter_wins = VALUES(scepter_wins), " +
+                                               $"shard_plays = VALUES(shard_plays), shard_wins = VALUES(shard_wins);");
+                    }
 
                     lineCount++;
-                    if (lineCount >= 10000)
+                    if (lineCount >= 10000) // Temporarily lower the threshold to ensure the file is written
                     {
                         WriteToFileAndReset();
                     }
@@ -141,9 +172,25 @@ namespace BrokeAPI
                     var plays = player.Value.GetProperty("plays").GetInt32();
                     var wins = player.Value.GetProperty("wins").GetInt32();
 
-                    sqlCommands.AppendLine($"INSERT INTO players (steam_id, mmr, plays, wins) " +
-                                           $"VALUES ({steamId}, {mmr}, {plays}, {wins}) " +
-                                           $"ON DUPLICATE KEY UPDATE mmr = VALUES(mmr), plays = VALUES(plays), wins = VALUES(wins);");
+                    if (databaseEngine.Equals("MSSQL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // MSSQL specific SQL syntax
+                        sqlCommands.AppendLine($"MERGE INTO players WITH (HOLDLOCK) AS target " +
+                                               $"USING (SELECT {steamId} AS steam_id) AS source " +
+                                               $"ON target.steam_id = source.steam_id " +
+                                               $"WHEN MATCHED THEN " +
+                                               $"UPDATE SET mmr = {mmr}, plays = {plays}, wins = {wins} " +
+                                               $"WHEN NOT MATCHED THEN " +
+                                               $"INSERT (steam_id, mmr, plays, wins) " +
+                                               $"VALUES ({steamId}, {mmr}, {plays}, {wins});");  // Add semi-colon here
+                    }
+                    else
+                    {
+                        // MySQL specific SQL syntax
+                        sqlCommands.AppendLine($"INSERT INTO players (steam_id, mmr, plays, wins) " +
+                                               $"VALUES ({steamId}, {mmr}, {plays}, {wins}) " +
+                                               $"ON DUPLICATE KEY UPDATE mmr = VALUES(mmr), plays = VALUES(plays), wins = VALUES(wins);");
+                    }
 
                     lineCount++;
                     if (lineCount >= 10000)
@@ -152,28 +199,37 @@ namespace BrokeAPI
                     }
                 }
 
-                // Processing rounds
-                var rounds = jsonDoc.RootElement.GetProperty("rounds").GetProperty("round_won");
-                var challenger = rounds.GetProperty("challenger").GetInt32();
-                var hard = rounds.GetProperty("hard").GetInt32();
-                var nightmare = rounds.GetProperty("nightmare").GetInt32();
-                var normal = rounds.GetProperty("normal").GetInt32();
 
-                sqlCommands.AppendLine($"INSERT INTO rounds (id, challenger, hard, nightmare, normal) " +
-                                       $"VALUES (1, {challenger}, {hard}, {nightmare}, {normal}) " +
-                                       $"ON DUPLICATE KEY UPDATE challenger = VALUES(challenger), hard = VALUES(hard), " +
-                                       $"nightmare = VALUES(nightmare), normal = VALUES(normal);");
-
-                lineCount++;
-                if (lineCount >= 10000)
+                var rounds = jsonDoc.RootElement.GetProperty("rounds").GetProperty("round_won").EnumerateObject();
+                foreach (var round in rounds)
                 {
-                    WriteToFileAndReset();
-                }
+                    var name = round.Name;
+                    var roundsWins = round.Value.GetInt64();
+                    if (databaseEngine.Equals("MSSQL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // MSSQL specific SQL syntax
+                        sqlCommands.AppendLine($"MERGE INTO rounds WITH (HOLDLOCK) AS target " +
+                                               $"USING (SELECT '{name}' AS name) AS source " +
+                                               $"ON target.name = source.name " +
+                                               $"WHEN MATCHED THEN " +
+                                               $"UPDATE SET wins = {roundsWins} " +
+                                               $"WHEN NOT MATCHED THEN " +
+                                               $"INSERT (name, wins) " +
+                                               $"VALUES ('{name}', {roundsWins});");
+                    }
+                    else
+                    {
+                        // MySQL specific SQL syntax
+                        sqlCommands.AppendLine($"INSERT INTO rounds (name, wins) " +
+                                               $"VALUES ('{name}', {roundsWins}) " +
+                                               $"ON DUPLICATE KEY UPDATE wins = VALUES(wins);");
+                    }
 
-                // Write remaining commands if any
-                if (lineCount > 0)
-                {
-                    WriteToFileAndReset();
+                    lineCount++;
+                    if (lineCount >= 1)
+                    {
+                        WriteToFileAndReset();
+                    }
                 }
 
                 Console.WriteLine("SQL files created successfully.");
@@ -193,7 +249,6 @@ namespace BrokeAPI
                 if (!string.IsNullOrWhiteSpace(sqlContent))
                 {
                     await ExecuteSqlFile(sqlFile);
-                    await Task.Delay(3000); // Delay between files
                 }
                 else
                 {
@@ -202,38 +257,82 @@ namespace BrokeAPI
             }
         }
 
-
         public async Task ExecuteSqlFile(string sqlFilePath)
         {
+            var databaseConfig = _config.Element("Database");
+            if (databaseConfig == null)
+            {
+                Console.WriteLine("Database configuration is missing. Cannot execute SQL file.");
+                return;
+            }
+
+            var databaseEngine = databaseConfig.Element("Engine")?.Value ?? "MySQL"; // Default to MySQL
+
             try
             {
-                var databaseConfig = _config.Element("Database");
-                var connectionString = $"Server={databaseConfig?.Element("DatabaseIP")?.Value};" +
-                                       $"Port={databaseConfig?.Element("DatabasePort")?.Value};" +
-                                       $"Database={databaseConfig?.Element("DatabaseName")?.Value};" +
-                                       $"User={databaseConfig?.Element("DatabaseLogin")?.Value};" +
-                                       $"Password={databaseConfig?.Element("DatabasePassword")?.Value};";
-
-                using var connection = new MySqlConnection(connectionString);
-                await connection.OpenAsync();
-
-                var sqlCommands = File.ReadAllText(sqlFilePath).Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-
-                foreach (var sqlCommand in sqlCommands)
+                if (databaseEngine.Equals("MSSQL", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!string.IsNullOrWhiteSpace(sqlCommand))
-                    {
-                        using var command = new MySqlCommand(sqlCommand, connection);
-                        await command.ExecuteNonQueryAsync();
-                    }
+                    await ExecuteSqlFileMSSQL(sqlFilePath, databaseConfig);
                 }
-
-                Console.WriteLine($"SQL file executed successfully: {sqlFilePath}");
+                else // Default to MySQL
+                {
+                    await ExecuteSqlFileMySQL(sqlFilePath, databaseConfig);
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error executing SQL file {sqlFilePath}: {ex.Message}");
             }
         }
+
+        private static async Task ExecuteSqlFileMySQL(string sqlFilePath, XElement databaseConfig)
+        {
+            var connectionString = $"Server={databaseConfig?.Element("DatabaseIP")?.Value};" +
+                                   $"Port={databaseConfig?.Element("DatabasePort")?.Value};" +
+                                   $"Database={databaseConfig?.Element("DatabaseName")?.Value};" +
+                                   $"User={databaseConfig?.Element("DatabaseLogin")?.Value};" +
+                                   $"Password={databaseConfig?.Element("DatabasePassword")?.Value};";
+
+            using var connection = new MySqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            var sqlCommands = File.ReadAllText(sqlFilePath).Split(separatorArray, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var sqlCommand in sqlCommands)
+            {
+                if (!string.IsNullOrWhiteSpace(sqlCommand))
+                {
+                    using var command = new MySqlCommand(sqlCommand, connection);
+                    await command.ExecuteNonQueryAsync();
+                }
+            }
+        }
+
+        public static async Task ExecuteSqlFileMSSQL(string sqlFilePath, XElement databaseConfig)
+        {
+            var connectionString = $"Server={databaseConfig?.Element("DatabaseIP")?.Value};" +
+                                   $"Database={databaseConfig?.Element("DatabaseName")?.Value};" +
+                                   $"User Id={databaseConfig?.Element("DatabaseLogin")?.Value};" +
+                                   $"Password={databaseConfig?.Element("DatabasePassword")?.Value};";
+
+            using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            var sqlContent = File.ReadAllText(sqlFilePath);
+            // Split the SQL content by semicolons to get individual statements
+            var sqlCommands = sqlContent.Split(';', StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var sqlCommand in sqlCommands)
+            {
+                if (!string.IsNullOrWhiteSpace(sqlCommand))
+                {
+                    // Add a semicolon at the end of the SQL command
+                    var formattedSql = sqlCommand.Trim() + ";";
+
+                    using var command = new SqlCommand(formattedSql, connection);
+                    await command.ExecuteNonQueryAsync();
+                }
+            }
+        }
+
     }
 }
