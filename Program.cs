@@ -180,25 +180,25 @@ namespace BrokeAPI
             var url = $"http://{ip}:{port}";
             Console.WriteLine("Webserver started at: " + url);
 
-            var host = Host.CreateDefaultBuilder()
-              .UseSerilog() // Use Serilog for logging
-              .ConfigureWebHostDefaults(webBuilder =>
-              {
-                  webBuilder.Configure(app =>
-                  {
-                      app.UseRouting();
+            if (_config == null)
+            {
+                Console.WriteLine("Configuration is null, cannot start webserver.");
+                return;
+            }
 
-                      app.UseEndpoints(endpoints =>
-                      {
-                          endpoints.MapGet("/", async context =>
-                          {
-                              await context.Response.WriteAsync("");
-                          });
-                      });
-                  })
+            var host = Host.CreateDefaultBuilder()
+                .UseSerilog() // Use Serilog for logging
+                .ConfigureWebHostDefaults(webBuilder =>
+                {
+                    webBuilder.Configure(app =>
+                    {
+                        var frontend = new Frontend(_config);
+                        frontend.ConfigureRoutes(app);
+                    })
                     .UseUrls(url);
-              }).Build();
+                }).Build();
             await host.RunAsync();
         }
+
     }
 }

@@ -11,44 +11,57 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Data.SqlClient;
+using Serilog;
 
 namespace BrokeAPI
 {
-    public class Backend(XElement config, int updateTime)
+    public class Backend
     {
-        private readonly XElement _config = config;
-        private System.Timers.Timer? _timer; // Make _timer nullable
-        private readonly int _updateTime = updateTime;
-        private static readonly char[] separator = [';'];
+        private readonly XElement _config;
+        private System.Timers.Timer? _timer;
+        private readonly int _updateTime;
         private static readonly char[] separatorArray = [';'];
+
+        public Backend(XElement config, int updateTime)
+        {
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            _updateTime = updateTime;
+            Log.Information("Backend initialized with update time: {UpdateTime}", updateTime);
+        }
 
         public void Start()
         {
+            Log.Information("Starting Backend process.");
             ScheduleDataRetrieval();
         }
 
         private void ScheduleDataRetrieval()
         {
-            Console.WriteLine("Attempting scheduled data retrieval.");
+            Log.Information("Scheduling data retrieval.");
             var currentTime = DateTime.Now;
             var nextMinute = new DateTime(currentTime.Year, currentTime.Month, currentTime.Day, currentTime.Hour, currentTime.Minute, 0).AddMinutes(1);
             var delay = (int)(nextMinute - currentTime).TotalMilliseconds;
 
-         //var nextHour = new DateTime(currentTime.Year, currentTime.Month, currentTime.Day, currentTime.Hour, 0, 0).AddHours(1);
-         //var delay = (int)(nextHour - currentTime).TotalMilliseconds;
-
+            //var nextHour = new DateTime(currentTime.Year, currentTime.Month, currentTime.Day, currentTime.Hour, 0, 0).AddHours(1);
+            //var delay = (int)(nextHour - currentTime).TotalMilliseconds;
 
             _timer = new System.Timers.Timer(delay);
             _timer.Elapsed += async (sender, e) => await OnTimedEvent();
             _timer.Start();
+            Log.Information("Data retrieval scheduled to start in {Delay} milliseconds.", delay);
         }
 
         private async Task OnTimedEvent()
         {
+            Log.Information("Timer event triggered.");
             if (_timer != null)
             {
-                _timer.Interval = _updateTime; // Use the UpdateTime from config
+                _timer.Interval = _updateTime;
                 await RetrieveAndUpdateData();
+            }
+            else
+            {
+                Log.Warning("Timer is null, unable to proceed with data retrieval.");
             }
         }
 
@@ -56,38 +69,41 @@ namespace BrokeAPI
         {
             try
             {
+                Log.Information("Retrieving and updating data.");
                 var outputDirectory = Path.Combine(Directory.GetCurrentDirectory(), "output");
                 var sqlDirectory = Path.Combine(outputDirectory, "sql");
 
-                // Create output directory if not exists
-                if (!Directory.Exists(outputDirectory)) Directory.CreateDirectory(outputDirectory);
+                if (!Directory.Exists(outputDirectory))
+                {
+                    Log.Information("Creating output directory.");
+                    Directory.CreateDirectory(outputDirectory);
+                }
 
-                // Clear sql directory
                 if (Directory.Exists(sqlDirectory))
                 {
+                    Log.Information("Clearing SQL directory.");
                     Directory.Delete(sqlDirectory, true);
                 }
                 Directory.CreateDirectory(sqlDirectory);
 
                 var outputFilePath = Path.Combine(outputDirectory, "output.json");
-
                 var authKey = _config.Element("DataHost")?.Element("AuthKey")?.Value;
                 var serverLocation = _config.Element("DataHost")?.Element("ServerLocation")?.Value;
 
                 using var client = new HttpClient();
-                Console.WriteLine("Request sent.");
+                Log.Information("Sending request to {ServerLocation}", serverLocation);
                 var response = await client.GetStringAsync($"{serverLocation}/{authKey}/.json");
                 File.WriteAllText(outputFilePath, response);
-
-                Console.WriteLine("Response received");
+                Log.Information("Response received and written to {OutputFilePath}", outputFilePath);
 
                 var outputJsonPath = Path.Combine(outputDirectory, "output.json");
-                ProcessJsonToSql(outputJsonPath, sqlDirectory); // Updated to pass directory
-                await ExecuteSqlFiles(sqlDirectory); // New method to execute all SQL files
+                ProcessJsonToSql(outputJsonPath, sqlDirectory);
+                await ExecuteSqlFiles(sqlDirectory);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error: {ex.Message}");
+                Log.Error(ex, "Error during data retrieval and update.");
             }
         }
 
@@ -95,22 +111,27 @@ namespace BrokeAPI
         private void ProcessJsonToSql(string jsonFilePath, string sqlDirectory)
         {
             var databaseEngine = _config.Element("Database")?.Element("Engine")?.Value ?? "MySQL";
+            Log.Information("Processing JSON to SQL. Database Engine: {DatabaseEngine}", databaseEngine);
 
             try
             {
-
                 var jsonData = File.ReadAllText(jsonFilePath);
+                Log.Information("JSON data read from {JsonFilePath}", jsonFilePath);
+
                 using var jsonDoc = JsonDocument.Parse(jsonData);
+                Log.Information("JSON document parsed successfully.");
 
                 StringBuilder sqlCommands = new();
                 int fileCount = 0, lineCount = 0;
 
                 void WriteToFileAndReset()
                 {
-                    if (sqlCommands.Length > 0) // Check if there are any SQL commands to write
+                    if (sqlCommands.Length > 0)
                     {
                         var filePath = Path.Combine(sqlDirectory, $"output_{fileCount}.sql");
                         File.WriteAllText(filePath, sqlCommands.ToString());
+                        Log.Information("SQL commands written to file: {FilePath}", filePath);
+
                         sqlCommands.Clear();
                         fileCount++;
                         lineCount = 0;
@@ -118,6 +139,7 @@ namespace BrokeAPI
                     else
                     {
                         Console.WriteLine("No SQL commands to write.");
+                        Log.Information("No SQL commands to write at this point.");
                     }
                 }
 
@@ -233,55 +255,65 @@ namespace BrokeAPI
                 }
 
                 Console.WriteLine("SQL files created successfully.");
+                Log.Information("SQL files created successfully.");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error processing JSON to SQL: {ex.Message}");
+                Log.Error(ex, "Error processing JSON to SQL.");
             }
         }
 
         public async Task ExecuteSqlFiles(string sqlDirectory)
         {
+            Log.Information("Executing SQL files in directory: {SqlDirectory}", sqlDirectory);
             var sqlFiles = Directory.GetFiles(sqlDirectory, "*.sql");
             foreach (var sqlFile in sqlFiles)
             {
+                Log.Information("Reading SQL file: {SqlFile}", sqlFile);
                 var sqlContent = File.ReadAllText(sqlFile);
                 if (!string.IsNullOrWhiteSpace(sqlContent))
                 {
+                    Log.Information("Executing SQL file: {SqlFile}", sqlFile);
                     await ExecuteSqlFile(sqlFile);
                 }
                 else
                 {
                     Console.WriteLine($"Skipping empty SQL file: {sqlFile}");
+                    Log.Information("Skipping empty SQL file: {SqlFile}", sqlFile);
                 }
             }
         }
 
         public async Task ExecuteSqlFile(string sqlFilePath)
         {
+            Log.Information("Preparing to execute SQL file: {SqlFilePath}", sqlFilePath);
             var databaseConfig = _config.Element("Database");
             if (databaseConfig == null)
             {
                 Console.WriteLine("Database configuration is missing. Cannot execute SQL file.");
+                Log.Warning("Database configuration is missing. Cannot execute SQL file: {SqlFilePath}", sqlFilePath);
                 return;
             }
 
-            var databaseEngine = databaseConfig.Element("Engine")?.Value ?? "MySQL"; // Default to MySQL
-
+            var databaseEngine = databaseConfig.Element("Engine")?.Value ?? "MySQL";
             try
             {
                 if (databaseEngine.Equals("MSSQL", StringComparison.OrdinalIgnoreCase))
                 {
+                    Log.Information("Executing MSSQL file: {SqlFilePath}", sqlFilePath);
                     await ExecuteSqlFileMSSQL(sqlFilePath, databaseConfig);
                 }
-                else // Default to MySQL
+                else
                 {
+                    Log.Information("Executing MySQL file: {SqlFilePath}", sqlFilePath);
                     await ExecuteSqlFileMySQL(sqlFilePath, databaseConfig);
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error executing SQL file {sqlFilePath}: {ex.Message}");
+                Log.Error(ex, "Error executing SQL file: {SqlFilePath}", sqlFilePath);
             }
         }
 
@@ -295,7 +327,7 @@ namespace BrokeAPI
 
             using var connection = new MySqlConnection(connectionString);
             await connection.OpenAsync();
-
+            Log.Information("Executing SQL commands in MySQL for file: {SqlFilePath}", sqlFilePath);
             var sqlCommands = File.ReadAllText(sqlFilePath).Split(separatorArray, StringSplitOptions.RemoveEmptyEntries);
             foreach (var sqlCommand in sqlCommands)
             {
@@ -318,7 +350,9 @@ namespace BrokeAPI
             await connection.OpenAsync();
 
             var sqlContent = File.ReadAllText(sqlFilePath);
-            // Split the SQL content by semicolons to get individual statements
+
+            Log.Information("Executing SQL commands in MSSQL for file: {SqlFilePath}", sqlFilePath);
+
             var sqlCommands = sqlContent.Split(';', StringSplitOptions.RemoveEmptyEntries);
 
             foreach (var sqlCommand in sqlCommands)
